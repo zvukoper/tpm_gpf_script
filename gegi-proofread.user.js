@@ -2,8 +2,8 @@
 // @name         GEGI AI Proofreader Bridge
 // @namespace    gegi-ai-proofreader
 // @version      1.0.0
-// @description  Связывает редактор статей Freshdesk с GEGI AI Proofreader: импорт, gutter и синхронизация ошибок.
-// @match        https://*.freshdesk.com/*
+// @description  Только визуальный мост Freshdesk → GEGI AI Proofreader: gutter, прокрутка и синхронизация. Текст Freshdesk не изменяет.
+// @match        https://*.freshdesk.com/a/solutions/articles/*/edit*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getValue
 // @grant        GM_setValue
