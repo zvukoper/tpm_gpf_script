@@ -2,7 +2,7 @@
 // @name         GEGI AI Proofreader Bridge
 // @namespace    gegi-ai-proofreader
 // @version      1.6.0
-// @description  Визуальный мост Freshdesk → GEGI AI Proofreader с поддержкой SPA-перехода в режим Edit. Текст Freshdesk не изменяет.
+// @description  Визуальный мост Freshdesk → GEGI AI Proofreader с поддержкой SPA-перехода в режим Edit и ручной передачей финального текста. Текст Freshdesk не изменяет.
 // @match        https://*.freshdesk.com/a/solutions/articles/*
 // @match        https://redmine.gegi.co/my/page*
 // @match        https://redmine.gegi.co/issues/*
@@ -678,6 +678,7 @@
     const edit = isEditMode();
     for (const selector of [
       '.gegi-proofreader-button',
+      '.gegi-final-text-button',
       '.gegi-fixed-button',
       '.gegi-ignore-button',
       '.gegi-prev-button',
@@ -706,6 +707,7 @@
     status.textContent = 'GEGI AI Proofreader: запуск...';
 
     const proofreader = createBridgeButton('В GEGI Proofreader', 'gegi-proofreader-button');
+    const finalTextButton = createBridgeButton('Финальный текст в пруфридер', 'gegi-final-text-button');
     const fixed = createBridgeButton('✓', 'gegi-fixed-button');
     const ignored = createBridgeButton('X', 'gegi-ignore-button');
     const previous = createBridgeButton('Предыдущая', 'gegi-prev-button');
@@ -719,12 +721,19 @@
     ignored.disabled = true;
     previous.disabled = true;
     next.disabled = true;
+    finalTextButton.title = 'Передать текущий текст из редактора Freshdesk в Proofreader как финальную версию для сравнения в отчёте.';
+    finalTextButton.setAttribute('aria-label', finalTextButton.title);
     finish.title = 'Завершить задачу и перейти на страницу задач Redmine.';
 
     proofreader.addEventListener('click', event => {
       event.preventDefault();
       event.stopPropagation();
       void sendCurrentArticleToProofreader();
+    });
+    finalTextButton.addEventListener('click', event => {
+      event.preventDefault();
+      event.stopPropagation();
+      void sendCurrentArticleAsFinalText();
     });
     fixed.addEventListener('click', event => {
       event.preventDefault();
@@ -752,7 +761,7 @@
       void completeFreshdeskTask();
     });
 
-    toolbar.append(status, proofreader, fixed, ignored, previous, next, finish);
+    toolbar.append(status, proofreader, finalTextButton, fixed, ignored, previous, next, finish);
     document.body.appendChild(toolbar);
     updateToolbarMode();
     setDiagnostic('ui', 'установлены');
@@ -1166,6 +1175,42 @@
       openRedmineAfterTask();
     } catch (error) {
       setStatus('не удалось завершить задачу: ' + error.message, 'error');
+    }
+  }
+
+  async function sendCurrentArticleAsFinalText() {
+    const editor = findEditor();
+    if (!editor) {
+      alert('Не удалось найти поле редактирования Freshdesk.');
+      return;
+    }
+    currentEditor = editor;
+
+    const finalText = renderedText(editor);
+    if (!finalText.trim()) {
+      setStatus('финальный текст пуст', 'error');
+      return;
+    }
+
+    try {
+      await gmRequest({
+        method: 'POST',
+        url: MEDIATOR + '/api/sync/publish',
+        body: {
+          channel: currentChannel,
+          source: 'freshdesk',
+          type: 'final-text',
+          activeIndex: Number.isInteger(currentState?.activeIndex) ? currentState.activeIndex : -1,
+          sourceSelectionStart: Number(currentState?.sourceSelectionStart) || 0,
+          issues: currentState?.issues || [],
+          importId: '',
+          text: finalText,
+          requestId: crypto.randomUUID()
+        }
+      });
+      setStatus('финальный текст передан в Proofreader', 'ok');
+    } catch (error) {
+      setStatus('не удалось передать финальный текст: ' + error.message, 'error');
     }
   }
 
