@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GEGI AI Proofreader Bridge
 // @namespace    gegi-ai-proofreader
-// @version      1.0.2
+// @version      1.0.3
 // @description  Только визуальный мост Freshdesk → GEGI AI Proofreader: gutter, прокрутка и синхронизация. Текст Freshdesk не изменяет.
 // @match        https://*.freshdesk.com/a/solutions/articles/*/edit*
 // @grant        GM_xmlhttpRequest
@@ -65,13 +65,10 @@
   }
 
   function setStatus(message, state = 'info') {
-    let status = document.getElementById(STATUS_ID);
-    if (!status) {
-      status = document.createElement('div');
-      status.id = STATUS_ID;
-      document.body?.appendChild(status);
-    }
-    status.dataset.state = state;
+    const panel = document.getElementById(UI_ID);
+    const status = panel?.querySelector('.gegi-status');
+    if (!status) return;
+    panel.dataset.state = state;
     status.textContent = 'GEGI AI Proofreader: ' + message;
   }
 
@@ -269,18 +266,11 @@
       .find(button => String(button.textContent || '').trim().toLowerCase() === wanted);
   }
 
-  function cloneActionButton(reference, label, className) {
+  function createBridgeButton(label, className) {
     const button = document.createElement('button');
     button.type = 'button';
-    button.className = reference?.className || '';
-    button.classList.add(className);
+    button.className = 'gegi-panel-button ' + className;
     button.textContent = label;
-    button.removeAttribute('id');
-    button.removeAttribute('name');
-    button.removeAttribute('data-cmd');
-    button.removeAttribute('data-command');
-    button.removeAttribute('aria-label');
-    button.removeAttribute('title');
     return button;
   }
 
@@ -289,12 +279,18 @@
     const style = document.createElement('style');
     style.id = STYLE_ID;
     style.textContent = [
-      '#gegi-proofread-status{position:fixed;left:10px;bottom:10px;z-index:2147483647;box-sizing:border-box;max-width:360px;padding:6px 10px;border:1px solid rgba(0,0,0,.28);border-left-width:4px;border-radius:4px;background:rgba(31,34,38,.96);color:#fff;font:600 12px/1.35 -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;letter-spacing:.05px;box-shadow:0 2px 10px rgba(0,0,0,.3);pointer-events:none;white-space:nowrap}', 
-      '#gegi-proofread-status[data-state="ok"]{border-left-color:#4cc35a}',
-      '#gegi-proofread-status[data-state="warn"]{border-left-color:#f0ad4e}',
-      '#gegi-proofread-status[data-state="error"]{border-left-color:#e32929}',
-      '#gegi-proofread-status[data-state="info"]{border-left-color:#5b8cff}',
-      '#gegi-proofread-toolbar{display:inline-flex;align-items:center;gap:6px;margin:0 8px 0 0}',
+      '#gegi-proofread-toolbar{position:fixed;left:0;right:0;bottom:0;z-index:2147483647;height:20px;min-height:20px;box-sizing:border-box;display:flex;align-items:center;gap:4px;padding:1px 5px;background:rgba(31,34,38,.97);border-top:1px solid rgba(255,255,255,.16);box-shadow:0 -2px 10px rgba(0,0,0,.28);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;overflow:hidden}',
+      '#gegi-proofread-toolbar .gegi-status{flex:1 1 auto;min-width:80px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:600 10px/18px -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;color:#fff}',
+      '#gegi-proofread-toolbar[data-state="ok"] .gegi-status{color:#82d989}',
+      '#gegi-proofread-toolbar[data-state="warn"] .gegi-status{color:#ffca6b}',
+      '#gegi-proofread-toolbar[data-state="error"] .gegi-status{color:#ff7979}',
+      '#gegi-proofread-toolbar[data-state="info"] .gegi-status{color:#9bb8ff}',
+      '#gegi-proofread-toolbar .gegi-panel-button{height:18px;min-height:18px;padding:0 7px;border:1px solid rgba(255,255,255,.22);border-radius:2px;background:rgba(255,255,255,.09);color:#fff;font:600 10px/16px -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;cursor:pointer;box-sizing:border-box;white-space:nowrap}',
+      '#gegi-proofread-toolbar .gegi-panel-button:hover:not(:disabled){background:rgba(255,255,255,.16)}',
+      '#gegi-proofread-toolbar .gegi-panel-button:disabled{opacity:.42;cursor:default}',
+      '#gegi-proofread-toolbar .gegi-proofreader-button{border-color:rgba(94,163,255,.65)}',
+      '#gegi-proofread-toolbar .gegi-prev-button,#gegi-proofread-toolbar .gegi-next-button{min-width:76px}',
+      '#gegi-proofread-status{display:none}',
       '#gegi-proofread-toolbar button.gegi-sync-button{min-width:0}',
       '#gegi-proofread-gutter{position:fixed;z-index:2147483645;display:none;width:18px;background:#c9c9c9;border-right:1px solid rgba(28,32,35,.15);pointer-events:none;box-sizing:border-box}',
       '#gegi-proofread-gutter .gegi-gutter-marker{position:absolute;left:4px;width:10px;height:10px;border-radius:50%;box-sizing:border-box}',
@@ -349,20 +345,17 @@
       return;
     }
 
-    const cancel = findActionButton('cancel-button', 'Cancel');
-    const save = findActionButton('save-button', 'Save');
-    if (!cancel || !save || !cancel.parentElement) {
-      setDiagnostic('actions', 'не найдены');
-      return;
-    }
-    setDiagnostic('actions', 'найдены');
-
-    const toolbar = document.createElement('span');
+    const toolbar = document.createElement('div');
     toolbar.id = UI_ID;
+    toolbar.dataset.state = 'info';
 
-    const proofreader = cloneActionButton(save || cancel, 'В GEGI Proofreader', 'gegi-proofreader-button gegi-sync-button');
-    const previous = cloneActionButton(cancel, 'Предыдущая', 'gegi-prev-button gegi-sync-button');
-    const next = cloneActionButton(cancel, 'Следующая', 'gegi-next-button gegi-sync-button');
+    const status = document.createElement('span');
+    status.className = 'gegi-status';
+    status.textContent = 'GEGI AI Proofreader: запуск...';
+
+    const proofreader = createBridgeButton('В GEGI Proofreader', 'gegi-proofreader-button');
+    const previous = createBridgeButton('Предыдущая', 'gegi-prev-button');
+    const next = createBridgeButton('Следующая', 'gegi-next-button');
     previous.disabled = true;
     next.disabled = true;
 
@@ -382,8 +375,8 @@
       void moveActiveIssue(1);
     });
 
-    toolbar.append(proofreader, previous, next);
-    cancel.parentElement.insertBefore(toolbar, cancel);
+    toolbar.append(status, proofreader, previous, next);
+    document.body.appendChild(toolbar);
     setDiagnostic('ui', 'установлены');
   }
 
