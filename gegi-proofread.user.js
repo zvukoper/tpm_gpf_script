@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GEGI AI Proofreader Bridge
 // @namespace    gegi-ai-proofreader
-// @version      1.5.0
+// @version      1.6.0
 // @description  Визуальный мост Freshdesk → GEGI AI Proofreader с поддержкой SPA-перехода в режим Edit. Текст Freshdesk не изменяет.
 // @match        https://*.freshdesk.com/a/solutions/articles/*
 // @match        https://redmine.gegi.co/my/page*
@@ -74,8 +74,9 @@
     try {
       const url = new URL(raw, location.href);
       if (url.origin !== 'https://redmine.gegi.co') return '';
-      if (!/^\/issues\/\d+(?:\/edit)?\/?$/.test(url.pathname)) return '';
-      return 'https://redmine.gegi.co' + url.pathname.replace(/\/$/, '');
+      const match = url.pathname.match(/^\/issues\/(\d+)(?:\/edit)?\/?$/);
+      if (!match) return '';
+      return 'https://redmine.gegi.co/issues/' + match[1];
     } catch {
       return '';
     }
