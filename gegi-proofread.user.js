@@ -37,6 +37,12 @@
   let actionTimer = null;
   let toolbarRetryTimer = null;
   let proofreaderWindow = null;
+  const diagnostic = {
+    editor: 'проверяю',
+    actions: 'проверяю',
+    ui: 'не установлены',
+    server: 'проверяю'
+  };
 
   // STRICT FRESHDESK SAFETY INVARIANT:
   // This script never writes to currentEditor. It only reads text/HTML/geometry,
@@ -69,16 +75,35 @@
     status.textContent = 'GEGI AI Proofreader: ' + message;
   }
 
+  function renderDiagnosticStatus() {
+    const warning = diagnostic.actions === 'не найдены' || diagnostic.editor !== 'найден' || diagnostic.server === 'недоступен';
+    const state = warning ? (diagnostic.server === 'недоступен' ? 'warn' : 'info') : 'ok';
+    setStatus(
+      [
+        'редактор: ' + diagnostic.editor,
+        'Cancel/Save: ' + diagnostic.actions,
+        'UI: ' + diagnostic.ui,
+        'localhost: ' + diagnostic.server
+      ].join(' · '),
+      state
+    );
+  }
+
+  function setDiagnostic(key, value) {
+    diagnostic[key] = value;
+    renderDiagnosticStatus();
+  }
+
   async function checkMediatorStatus() {
     try {
       await gmRequest({
         method: 'GET',
         url: MEDIATOR + '/api/sync/state?channel=' + encodeURIComponent(currentChannel || 'freshdesk:status')
       });
-      setStatus('запущен · localhost:37891 доступен', 'ok');
+      setDiagnostic('server', 'доступен');
       return true;
     } catch {
-      setStatus('запущен · localhost:37891 недоступен', 'warn');
+      setDiagnostic('server', 'недоступен');
       return false;
     }
   }
@@ -319,11 +344,18 @@
 
   function installToolbar() {
     if (!isEditMode()) return;
-    if (document.getElementById(UI_ID)) return;
+    if (document.getElementById(UI_ID)) {
+      setDiagnostic('ui', 'установлены');
+      return;
+    }
 
     const cancel = findActionButton('cancel-button', 'Cancel');
     const save = findActionButton('save-button', 'Save');
-    if (!cancel || !save || !cancel.parentElement) return;
+    if (!cancel || !save || !cancel.parentElement) {
+      setDiagnostic('actions', 'не найдены');
+      return;
+    }
+    setDiagnostic('actions', 'найдены');
 
     const toolbar = document.createElement('span');
     toolbar.id = UI_ID;
@@ -351,7 +383,8 @@
     });
 
     toolbar.append(proofreader, previous, next);
-    cancel.parentElement?.insertBefore(toolbar, cancel);
+    cancel.parentElement.insertBefore(toolbar, cancel);
+    setDiagnostic('ui', 'установлены');
   }
 
   function ensureGutter() {
