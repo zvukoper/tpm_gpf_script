@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GEGI AI Proofreader Bridge
 // @namespace    gegi-ai-proofreader
-// @version      1.3.0
+// @version      1.4.0
 // @description  Визуальный мост Freshdesk → GEGI AI Proofreader с поддержкой SPA-перехода в режим Edit. Текст Freshdesk не изменяет.
 // @match        https://*.freshdesk.com/a/solutions/articles/*
 // @match        https://redmine.gegi.co/my/page*
@@ -70,7 +70,7 @@
     try {
       const url = new URL(raw, location.href);
       if (url.origin !== 'https://redmine.gegi.co') return '';
-      if (!/^\/issues\/\d+\/?$/.test(url.pathname)) return '';
+      if (!/^\/issues\/\d+(?:\/edit)?\/?$/.test(url.pathname)) return '';
       return 'https://redmine.gegi.co' + url.pathname.replace(/\/$/, '');
     } catch {
       return '';
@@ -120,11 +120,13 @@
   }
 
   function extractRedmineTaskTitleFromLink(link, taskUrl) {
+    const directTitle = cleanRedmineTaskTitle(link?.textContent, taskUrl);
+    if (directTitle) return directTitle;
+
     const candidates = [
       link?.getAttribute('data-title'),
       link?.getAttribute('aria-label'),
-      link?.getAttribute('title'),
-      link?.textContent
+      link?.getAttribute('title')
     ];
 
     const containers = [
@@ -1317,7 +1319,7 @@
 
   if (isRedmineMyPage()) {
     setupRedmineTaskCapture();
-  } else if (/^\/issues\/\d+\/?$/.test(location.pathname) && location.origin === 'https://redmine.gegi.co') {
+  } else if (/^\/issues\/\d+(?:\/edit)?\/?$/.test(location.pathname) && location.origin === 'https://redmine.gegi.co') {
     setupRedmineIssueTitleCapture();
     void syncStoredTaskContextToMediator();
   } else {
