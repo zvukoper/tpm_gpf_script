@@ -107,7 +107,7 @@
     const number = extractRedmineTaskNumber(taskUrl);
     if (number) {
       title = title.replace(
-        new RegExp('^\\s*(?:Bug|Feature|Support|Task|Issue|Задача)?\\s*#?' + number + '\\s*[:：-]?\\s*', 'i'),
+        new RegExp('^\\s*(?:Bug|Feature|Support|Task|Issue|Задача)?\\s*#?' + number + '\\s*[:：\\-–—]?\\s*', 'i'),
         ''
       );
     }
@@ -147,15 +147,17 @@
       onload: response => {
         if (response.status < 200 || response.status >= 300) return;
         const html = new DOMParser().parseFromString(response.responseText || '', 'text/html');
+        const number = extractRedmineTaskNumber(taskUrl);
         const candidates = [
-          html.querySelector('.subject h3')?.textContent,
-          html.querySelector('#content .subject')?.textContent,
-          html.querySelector('h2')?.textContent,
-          html.querySelector('meta[property="og:title"]')?.getAttribute('content'),
-          html.querySelector('title')?.textContent
+          { value: html.querySelector('.subject h3')?.textContent, requiresNumber: false },
+          { value: html.querySelector('#content .subject')?.textContent, requiresNumber: false },
+          { value: html.querySelector('h2')?.textContent, requiresNumber: true },
+          { value: html.querySelector('meta[property="og:title"]')?.getAttribute('content'), requiresNumber: true },
+          { value: html.querySelector('title')?.textContent, requiresNumber: true }
         ];
         for (const candidate of candidates) {
-          const title = cleanRedmineTaskTitle(candidate, taskUrl);
+          if (candidate.requiresNumber && (!number || !String(candidate.value || '').includes(number))) continue;
+          const title = cleanRedmineTaskTitle(candidate.value, taskUrl);
           if (title) {
             updateStoredTaskTitle(taskUrl, startedAt, title);
             return;
@@ -201,15 +203,17 @@
     const taskUrl = normalizeRedmineTaskUrl(location.href);
     const context = readStoredTaskContext();
     if (!taskUrl || !context || context.taskUrl !== taskUrl) return;
+    const number = extractRedmineTaskNumber(taskUrl);
     const candidates = [
-      document.querySelector('.subject h3')?.textContent,
-      document.querySelector('#content .subject')?.textContent,
-      document.querySelector('h2')?.textContent,
-      document.querySelector('meta[property="og:title"]')?.getAttribute('content'),
-      document.title
+      { value: document.querySelector('.subject h3')?.textContent, requiresNumber: false },
+      { value: document.querySelector('#content .subject')?.textContent, requiresNumber: false },
+      { value: document.querySelector('h2')?.textContent, requiresNumber: true },
+      { value: document.querySelector('meta[property="og:title"]')?.getAttribute('content'), requiresNumber: true },
+      { value: document.title, requiresNumber: true }
     ];
     for (const candidate of candidates) {
-      const title = cleanRedmineTaskTitle(candidate, taskUrl);
+      if (candidate.requiresNumber && (!number || !String(candidate.value || '').includes(number))) continue;
+      const title = cleanRedmineTaskTitle(candidate.value, taskUrl);
       if (title) {
         updateStoredTaskTitle(taskUrl, context.startedAt, title);
         return;
