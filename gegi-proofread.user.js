@@ -329,10 +329,23 @@
 
   async function syncStoredTaskContextToMediator() {
     const context = readStoredTaskContext();
-    if (!context) return;
+    if (!context) return false;
     try {
       await postTaskContext(context);
-    } catch {}
+      if (isRedmineMyPage() || isRedmineIssuePage()) {
+        renderStoredRedmineStatus();
+      }
+      return true;
+    } catch (error) {
+      if (isRedmineMyPage() || isRedmineIssuePage()) {
+        renderRedmineStatus(
+          'Перехват сохранён, но Proofreader не получил задачу',
+          'error',
+          '#' + extractRedmineTaskNumber(context.taskUrl) + ' · ' + context.taskUrl + (error?.message ? ' · ' + error.message : '')
+        );
+      }
+      return false;
+    }
   }
 
   function setupRedmineIssueTitleCapture() {
