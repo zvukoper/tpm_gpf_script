@@ -609,6 +609,7 @@
           source: 'freshdesk',
           type: 'active',
           activeIndex: next,
+          activeIssueId: issues[next]?.id || '',
           sourceSelectionStart: Number(currentState.sourceSelectionStart) || 0,
           issues: currentState.issues,
           importId: ''
@@ -660,6 +661,7 @@
           source: 'freshdesk',
           type: 'issues',
           activeIndex: nextIndex,
+          activeIssueId: issues[nextIndex]?.id || '',
           sourceSelectionStart: Number(currentState.sourceSelectionStart) || 0,
           issues,
           importId: ''
@@ -773,6 +775,7 @@
           source: 'freshdesk',
           type: 'import',
           activeIndex: -1,
+          activeIssueId: '',
           sourceSelectionStart: 0,
           issues: [],
           importId: imported.importId
