@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GEGI AI Proofreader Bridge
 // @namespace    gegi-ai-proofreader
-// @version      1.0.3
+// @version      1.0.4
 // @description  Только визуальный мост Freshdesk → GEGI AI Proofreader: gutter, прокрутка и синхронизация. Текст Freshdesk не изменяет.
 // @match        https://*.freshdesk.com/a/solutions/articles/*/edit*
 // @grant        GM_xmlhttpRequest
@@ -208,8 +208,12 @@
     return last ? { node: last.node, offset: last.node.nodeValue.length } : null;
   }
 
+  function isResolvedIssue(issue) {
+    return Boolean(issue?.fixed) || issue?.status === 'fixed' || issue?.status === 'ignored' || issue?.ignored;
+  }
+
   function issueRange(issue) {
-    if (!currentEditor || !issue || issue.fixed) return null;
+    if (!currentEditor || !issue || isResolvedIssue(issue)) return null;
     const startOffset = (Number(currentState?.sourceSelectionStart) || 0) + (Number(issue.start) || 0);
     const endOffset = (Number(currentState?.sourceSelectionStart) || 0) + (Number(issue.end) || 0);
     if (endOffset <= startOffset) return null;
@@ -418,7 +422,7 @@
     gutter.innerHTML = '';
 
     for (const issue of currentState.issues || []) {
-      if (issue.fixed) continue;
+      if (isResolvedIssue(issue)) continue;
       const range = issueRange(issue);
       if (!range) continue;
       const rect = [...range.getClientRects()].find(item => item.width > 0 && item.height > 0);
@@ -462,17 +466,25 @@
     if (!toolbar) return;
     const previous = toolbar.querySelector('.gegi-prev-button');
     const next = toolbar.querySelector('.gegi-next-button');
-    const issues = currentState?.issues || [];
-    const active = Number.isInteger(currentState?.activeIndex) ? currentState.activeIndex : -1;
-    previous.disabled = !issues.length || active <= 0;
-    next.disabled = !issues.length || active < 0 || active >= issues.length - 1;
+    const openIndexes = (currentState?.issues || [])
+      .map((issue, index) => isResolvedIssue(issue) ? -1 : index)
+      .filter(index => index >= 0);
+    const activePosition = openIndexes.indexOf(Number.isInteger(currentState?.activeIndex) ? currentState.activeIndex : -1);
+    previous.disabled = openIndexes.length < 2 || activePosition <= 0;
+    next.disabled = openIndexes.length < 2 || activePosition < 0 || activePosition >= openIndexes.length - 1;
   }
 
   async function moveActiveIssue(delta) {
-    const issues = currentState?.issues || [];
-    if (!issues.length) return;
-    const active = Number.isInteger(currentState.activeIndex) ? currentState.activeIndex : 0;
-    const next = Math.max(0, Math.min(issues.length - 1, active + delta));
+    const openIndexes = (currentState?.issues || [])
+      .map((issue, index) => isResolvedIssue(issue) ? -1 : index)
+      .filter(index => index >= 0);
+    if (!openIndexes.length) return;
+
+    const activePosition = openIndexes.indexOf(Number.isInteger(currentState.activeIndex) ? currentState.activeIndex : -1);
+    const currentPosition = activePosition < 0 ? 0 : activePosition;
+    const nextPosition = Math.max(0, Math.min(openIndexes.length - 1, currentPosition + delta));
+    const next = openIndexes[nextPosition];
+
     currentState = { ...currentState, activeIndex: next };
     persistState();
     updateToolbarState();
@@ -602,7 +614,8 @@
       scheduleRenderMarkers();
 
       const url = MEDIATOR + '/?import=' + encodeURIComponent(imported.importId) +
-        '&source=freshdesk&sync=' + encodeURIComponent(currentChannel);
+        '&source=freshdesk&sourceUrl=' + encodeURIComponent(location.href) +
+        '&sync=' + encodeURIComponent(currentChannel);
 
       try {
         if (proofreaderWindow && !proofreaderWindow.closed) {
