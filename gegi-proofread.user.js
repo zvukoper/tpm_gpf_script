@@ -786,7 +786,9 @@
       scheduleRenderMarkers();
 
       setStatus('текст передан в открытую вкладку Proofreader', 'ok');
-      renderDiagnosticStatus();
+    } catch (error) {
+      alert('GEGI AI Proofreader: ' + error.message);
+    }
   }
 
   function setupEditorObserver() {
