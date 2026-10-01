@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GEGI AI Proofreader Bridge
 // @namespace    gegi-ai-proofreader
-// @version      1.0.0
+// @version      1.0.1
 // @description  Только визуальный мост Freshdesk → GEGI AI Proofreader: gutter, прокрутка и синхронизация. Текст Freshdesk не изменяет.
 // @match        https://*.freshdesk.com/a/solutions/articles/*/edit*
 // @grant        GM_xmlhttpRequest
@@ -34,6 +34,7 @@
   let refreshObserver = null;
   let editorObserver = null;
   let actionTimer = null;
+  let toolbarRetryTimer = null;
   let proofreaderWindow = null;
 
   // STRICT FRESHDESK SAFETY INVARIANT:
@@ -44,11 +45,11 @@
   const stateKey = () => CACHE_PREFIX + currentChannel;
 
   function isEditMode() {
-    return /^\/a\/solutions\/articles\/\d+\/edit(?:[/?#]|$)/.test(location.pathname);
+    return /^\/a\/solutions\/articles\/[^/]+\/edit(?:[/?#]|$)/.test(location.pathname);
   }
 
   function getArticleId() {
-    const match = location.pathname.match(/^\/a\/solutions\/articles\/(\d+)\/edit(?:[/?#]|$)/);
+    const match = location.pathname.match(/^\/a\/solutions\/articles\/([^/]+)\/edit(?:[/?#]|$)/);
     return match ? match[1] : '';
   }
 
@@ -201,9 +202,19 @@
     return candidates[0]?.el || null;
   }
 
-  function findButtonByText(value) {
+  function findActionButton(testId, value) {
+    const byTestId = document.querySelector('[data-test-id="' + testId + '"]');
+    if (byTestId && (byTestId.matches('button,[role="button"]') || byTestId.querySelector('button'))) {
+      return byTestId.matches('button,[role="button"]') ? byTestId : byTestId.querySelector('button');
+    }
+
     const wanted = String(value).trim().toLowerCase();
     return [...document.querySelectorAll('button,[role="button"]')]
+      .filter(button => {
+        if (button.id === UI_ID || button.closest('#' + UI_ID)) return false;
+        const rect = button.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      })
       .find(button => String(button.textContent || '').trim().toLowerCase() === wanted);
   }
 
@@ -246,17 +257,41 @@
     document.getElementById(GUTTER_ID)?.remove();
     editorObserver?.disconnect();
     editorObserver = null;
+    if (toolbarRetryTimer) {
+      clearInterval(toolbarRetryTimer);
+      toolbarRetryTimer = null;
+    }
     currentEditor = null;
     currentState = null;
     lastServerRevision = 0;
   }
 
+  function startToolbarRetry() {
+    if (toolbarRetryTimer) clearInterval(toolbarRetryTimer);
+    installToolbar();
+    if (document.getElementById(UI_ID)) return;
+
+    toolbarRetryTimer = setInterval(() => {
+      if (!isEditMode()) {
+        clearInterval(toolbarRetryTimer);
+        toolbarRetryTimer = null;
+        return;
+      }
+      installToolbar();
+      if (document.getElementById(UI_ID)) {
+        clearInterval(toolbarRetryTimer);
+        toolbarRetryTimer = null;
+      }
+    }, 500);
+  }
+
   function installToolbar() {
     if (!isEditMode()) return;
-    const cancel = findButtonByText('Cancel');
-    const save = findButtonByText('Save');
-    if (!cancel || !save) return;
     if (document.getElementById(UI_ID)) return;
+
+    const cancel = findActionButton('cancel-button', 'Cancel');
+    const save = findActionButton('save-button', 'Save');
+    if (!cancel || !save || !cancel.parentElement) return;
 
     const toolbar = document.createElement('span');
     toolbar.id = UI_ID;
