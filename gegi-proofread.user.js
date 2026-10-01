@@ -1,9 +1,10 @@
 // ==UserScript==
 // @name         GEGI AI Proofreader Bridge
 // @namespace    gegi-ai-proofreader
-// @version      1.0.9
+// @version      1.1.0
 // @description  Визуальный мост Freshdesk → GEGI AI Proofreader с поддержкой SPA-перехода в режим Edit. Текст Freshdesk не изменяет.
 // @match        https://*.freshdesk.com/a/solutions/articles/*
+// @match        https://redmine.gegi.co/my/page*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -27,6 +28,7 @@
   const ACTIVE_ID = 'gegi-proofread-active';
   const ISSUE_CARD_ID = 'gegi-proofread-current-issue';
   const REDMINE_TASK_URL = 'https://redmine.gegi.co/my/page';
+  const REDMINE_TASK_STORAGE_KEY = 'gegi.redmine.last-task';
 
   let currentArticleId = '';
   let currentChannel = '';
@@ -55,6 +57,72 @@
   // page. Freshdesk text can be changed only by the user through Freshdesk itself.
 
   const stateKey = () => CACHE_PREFIX + currentChannel;
+
+  function isRedmineMyPage() {
+    return location.origin === 'https://redmine.gegi.co' && /^\/my\/page\/?$/.test(location.pathname);
+  }
+
+  function normalizeRedmineTaskUrl(value) {
+    const raw = String(value || '').trim();
+    try {
+      const url = new URL(raw, location.href);
+      if (url.origin !== 'https://redmine.gegi.co') return '';
+      if (!/^\/issues\/\d+\/?$/.test(url.pathname)) return '';
+      return 'https://redmine.gegi.co' + url.pathname.replace(/\/$/, '');
+    } catch {
+      return '';
+    }
+  }
+
+  function readStoredTaskContext() {
+    const value = GM_getValue(REDMINE_TASK_STORAGE_KEY, null);
+    if (!value || typeof value !== 'object') return null;
+    const taskUrl = normalizeRedmineTaskUrl(value.taskUrl);
+    const startedAt = Number(value.startedAt);
+    if (!taskUrl || !Number.isFinite(startedAt) || startedAt <= 0) return null;
+    return {
+      taskUrl,
+      startedAt: Math.round(startedAt)
+    };
+  }
+
+  function postTaskContext(context) {
+    return gmRequest({
+      method: 'POST',
+      url: MEDIATOR + '/api/task-context',
+      body: context
+    });
+  }
+
+  function rememberRedmineTask(href) {
+    const taskUrl = normalizeRedmineTaskUrl(href);
+    if (!taskUrl) return;
+    const context = {
+      taskUrl,
+      startedAt: Date.now()
+    };
+    GM_setValue(REDMINE_TASK_STORAGE_KEY, context);
+    void postTaskContext(context).catch(() => {});
+  }
+
+  function setupRedmineTaskCapture() {
+    document.addEventListener('click', event => {
+      if (event.button !== 0) return;
+      const link = event.target?.closest?.('a[href]');
+      if (!link) return;
+      const taskUrl = normalizeRedmineTaskUrl(link.href);
+      if (!taskUrl) return;
+      rememberRedmineTask(taskUrl);
+    }, true);
+  }
+
+  async function syncStoredTaskContextToMediator() {
+    const context = readStoredTaskContext();
+    if (!context) return;
+    try {
+      await postTaskContext(context);
+    } catch {}
+  }
 
   function isEditMode() {
     return /^\/a\/solutions\/articles\/[^/]+\/edit(?:[/?#]|$)/.test(location.pathname);
@@ -1013,7 +1081,12 @@
     }
   }
 
-  observePage();
-  installStyle();
-  refreshEditMode();
+  if (isRedmineMyPage()) {
+    setupRedmineTaskCapture();
+  } else {
+    void syncStoredTaskContextToMediator();
+    observePage();
+    installStyle();
+    refreshEditMode();
+  }
 })();
