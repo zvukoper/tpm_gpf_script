@@ -1,14 +1,16 @@
 // ==UserScript==
 // @name         GEGI AI Proofreader Bridge
 // @namespace    gegi-ai-proofreader
-// @version      1.1.0
+// @version      1.2.0
 // @description  Визуальный мост Freshdesk → GEGI AI Proofreader с поддержкой SPA-перехода в режим Edit. Текст Freshdesk не изменяет.
 // @match        https://*.freshdesk.com/a/solutions/articles/*
 // @match        https://redmine.gegi.co/my/page*
+// @match        https://redmine.gegi.co/issues/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_openInTab
+// @connect      redmine.gegi.co
 // @connect      127.0.0.1
 // @updateURL     https://raw.githubusercontent.com/zvukoper/tpm_gpf_script/main/gegi-proofread.user.js
 // @downloadURL   https://raw.githubusercontent.com/zvukoper/tpm_gpf_script/main/gegi-proofread.user.js
@@ -82,7 +84,8 @@
     if (!taskUrl || !Number.isFinite(startedAt) || startedAt <= 0) return null;
     return {
       taskUrl,
-      startedAt: Math.round(startedAt)
+      startedAt: Math.round(startedAt),
+      taskTitle: String(value.taskTitle || '').trim().slice(0, 500)
     };
   }
 
@@ -94,15 +97,85 @@
     });
   }
 
-  function rememberRedmineTask(href) {
+  function extractRedmineTaskNumber(taskUrl) {
+    const match = String(taskUrl || '').match(/\/issues\/(\d+)$/);
+    return match ? match[1] : '';
+  }
+
+  function cleanRedmineTaskTitle(value, taskUrl) {
+    let title = String(value || '').replace(/\s+/g, ' ').trim();
+    const number = extractRedmineTaskNumber(taskUrl);
+    if (number) {
+      title = title.replace(
+        new RegExp('^\\s*(?:Bug|Feature|Support|Task|Issue|Задача)?\\s*#?' + number + '\\s*[:：-]?\\s*', 'i'),
+        ''
+      );
+    }
+    title = title.replace(/\s+-\s+Redmine\s*$/i, '').trim();
+    if (!title || (number && new RegExp('^(?:#?' + number + '|Issue #?' + number + '|Bug #?' + number + ')$', 'i').test(title))) {
+      return '';
+    }
+    return title.slice(0, 500);
+  }
+
+  function extractRedmineTaskTitleFromLink(link, taskUrl) {
+    const candidates = [
+      link?.getAttribute('aria-label'),
+      link?.getAttribute('title'),
+      link?.textContent
+    ];
+    for (const candidate of candidates) {
+      const title = cleanRedmineTaskTitle(candidate, taskUrl);
+      if (title) return title;
+    }
+    return '';
+  }
+
+  function updateStoredTaskTitle(taskUrl, startedAt, taskTitle) {
+    const current = readStoredTaskContext();
+    if (!current || current.taskUrl !== taskUrl || current.startedAt !== startedAt || !taskTitle) return;
+    const context = { ...current, taskTitle };
+    GM_setValue(REDMINE_TASK_STORAGE_KEY, context);
+    void postTaskContext(context).catch(() => {});
+  }
+
+  function loadRedmineTaskTitle(taskUrl, startedAt) {
+    GM_xmlhttpRequest({
+      method: 'GET',
+      url: taskUrl,
+      headers: { Accept: 'text/html' },
+      onload: response => {
+        if (response.status < 200 || response.status >= 300) return;
+        const html = new DOMParser().parseFromString(response.responseText || '', 'text/html');
+        const candidates = [
+          html.querySelector('.subject h3')?.textContent,
+          html.querySelector('#content .subject')?.textContent,
+          html.querySelector('h2')?.textContent,
+          html.querySelector('meta[property="og:title"]')?.getAttribute('content'),
+          html.querySelector('title')?.textContent
+        ];
+        for (const candidate of candidates) {
+          const title = cleanRedmineTaskTitle(candidate, taskUrl);
+          if (title) {
+            updateStoredTaskTitle(taskUrl, startedAt, title);
+            return;
+          }
+        }
+      }
+    });
+  }
+
+  function rememberRedmineTask(href, titleHint = '') {
     const taskUrl = normalizeRedmineTaskUrl(href);
     if (!taskUrl) return;
     const context = {
       taskUrl,
-      startedAt: Date.now()
+      startedAt: Date.now(),
+      taskTitle: cleanRedmineTaskTitle(titleHint, taskUrl)
     };
     GM_setValue(REDMINE_TASK_STORAGE_KEY, context);
     void postTaskContext(context).catch(() => {});
+    loadRedmineTaskTitle(taskUrl, context.startedAt);
   }
 
   function setupRedmineTaskCapture() {
@@ -112,7 +185,7 @@
       if (!link) return;
       const taskUrl = normalizeRedmineTaskUrl(link.href);
       if (!taskUrl) return;
-      rememberRedmineTask(taskUrl);
+      rememberRedmineTask(taskUrl, extractRedmineTaskTitleFromLink(link, taskUrl));
     }, true);
   }
 
@@ -122,6 +195,26 @@
     try {
       await postTaskContext(context);
     } catch {}
+  }
+
+  function setupRedmineIssueTitleCapture() {
+    const taskUrl = normalizeRedmineTaskUrl(location.href);
+    const context = readStoredTaskContext();
+    if (!taskUrl || !context || context.taskUrl !== taskUrl) return;
+    const candidates = [
+      document.querySelector('.subject h3')?.textContent,
+      document.querySelector('#content .subject')?.textContent,
+      document.querySelector('h2')?.textContent,
+      document.querySelector('meta[property="og:title"]')?.getAttribute('content'),
+      document.title
+    ];
+    for (const candidate of candidates) {
+      const title = cleanRedmineTaskTitle(candidate, taskUrl);
+      if (title) {
+        updateStoredTaskTitle(taskUrl, context.startedAt, title);
+        return;
+      }
+    }
   }
 
   function isEditMode() {
@@ -1083,6 +1176,9 @@
 
   if (isRedmineMyPage()) {
     setupRedmineTaskCapture();
+  } else if (/^\/issues\/\d+\/?$/.test(location.pathname) && location.origin === 'https://redmine.gegi.co') {
+    setupRedmineIssueTitleCapture();
+    void syncStoredTaskContextToMediator();
   } else {
     void syncStoredTaskContextToMediator();
     observePage();
