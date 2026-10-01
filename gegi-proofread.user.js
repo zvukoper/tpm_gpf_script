@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GEGI AI Proofreader Bridge
 // @namespace    gegi-ai-proofreader
-// @version      1.0.7
+// @version      1.0.8
 // @description  Визуальный мост Freshdesk → GEGI AI Proofreader с поддержкой SPA-перехода в режим Edit. Текст Freshdesk не изменяет.
 // @match        https://*.freshdesk.com/a/solutions/articles/*
 // @grant        GM_xmlhttpRequest
@@ -609,7 +609,7 @@
           source: 'freshdesk',
           type: 'active',
           activeIndex: next,
-          activeIssueId: issues[next]?.id || '',
+          activeIssueId: currentState.issues[next]?.id || '',
           sourceSelectionStart: Number(currentState.sourceSelectionStart) || 0,
           issues: currentState.issues,
           importId: ''
