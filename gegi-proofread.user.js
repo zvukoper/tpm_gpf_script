@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GEGI AI Proofreader Bridge
 // @namespace    gegi-ai-proofreader
-// @version      1.0.1
+// @version      1.0.2
 // @description  Только визуальный мост Freshdesk → GEGI AI Proofreader: gutter, прокрутка и синхронизация. Текст Freshdesk не изменяет.
 // @match        https://*.freshdesk.com/a/solutions/articles/*/edit*
 // @grant        GM_xmlhttpRequest
@@ -23,6 +23,7 @@
   const STYLE_ID = 'gegi-proofread-bridge-style';
   const UI_ID = 'gegi-proofread-toolbar';
   const GUTTER_ID = 'gegi-proofread-gutter';
+  const STATUS_ID = 'gegi-proofread-status';
 
   let currentArticleId = '';
   let currentChannel = '';
@@ -55,6 +56,31 @@
 
   function getChannel() {
     return currentArticleId ? 'freshdesk:' + currentArticleId : '';
+  }
+
+  function setStatus(message, state = 'info') {
+    let status = document.getElementById(STATUS_ID);
+    if (!status) {
+      status = document.createElement('div');
+      status.id = STATUS_ID;
+      document.body?.appendChild(status);
+    }
+    status.dataset.state = state;
+    status.textContent = 'GEGI AI Proofreader: ' + message;
+  }
+
+  async function checkMediatorStatus() {
+    try {
+      await gmRequest({
+        method: 'GET',
+        url: MEDIATOR + '/api/sync/state?channel=' + encodeURIComponent(currentChannel || 'freshdesk:status')
+      });
+      setStatus('запущен · localhost:37891 доступен', 'ok');
+      return true;
+    } catch {
+      setStatus('запущен · localhost:37891 недоступен', 'warn');
+      return false;
+    }
   }
 
   function gmRequest({ method, url, body }) {
@@ -238,6 +264,11 @@
     const style = document.createElement('style');
     style.id = STYLE_ID;
     style.textContent = [
+      '#gegi-proofread-status{position:fixed;left:10px;bottom:10px;z-index:2147483647;box-sizing:border-box;max-width:360px;padding:6px 10px;border:1px solid rgba(0,0,0,.28);border-left-width:4px;border-radius:4px;background:rgba(31,34,38,.96);color:#fff;font:600 12px/1.35 -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;letter-spacing:.05px;box-shadow:0 2px 10px rgba(0,0,0,.3);pointer-events:none;white-space:nowrap}', 
+      '#gegi-proofread-status[data-state="ok"]{border-left-color:#4cc35a}',
+      '#gegi-proofread-status[data-state="warn"]{border-left-color:#f0ad4e}',
+      '#gegi-proofread-status[data-state="error"]{border-left-color:#e32929}',
+      '#gegi-proofread-status[data-state="info"]{border-left-color:#5b8cff}',
       '#gegi-proofread-toolbar{display:inline-flex;align-items:center;gap:6px;margin:0 8px 0 0}',
       '#gegi-proofread-toolbar button.gegi-sync-button{min-width:0}',
       '#gegi-proofread-gutter{position:fixed;z-index:2147483645;display:none;width:18px;background:#c9c9c9;border-right:1px solid rgba(28,32,35,.15);pointer-events:none;box-sizing:border-box}',
@@ -255,6 +286,7 @@
   function removeUi() {
     document.getElementById(UI_ID)?.remove();
     document.getElementById(GUTTER_ID)?.remove();
+    document.getElementById(STATUS_ID)?.remove();
     editorObserver?.disconnect();
     editorObserver = null;
     if (toolbarRetryTimer) {
