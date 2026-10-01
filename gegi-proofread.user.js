@@ -1,12 +1,13 @@
 // ==UserScript==
 // @name         GEGI AI Proofreader Bridge
 // @namespace    gegi-ai-proofreader
-// @version      1.0.8
+// @version      1.0.9
 // @description  Визуальный мост Freshdesk → GEGI AI Proofreader с поддержкой SPA-перехода в режим Edit. Текст Freshdesk не изменяет.
 // @match        https://*.freshdesk.com/a/solutions/articles/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getValue
 // @grant        GM_setValue
+// @grant        GM_openInTab
 // @connect      127.0.0.1
 // @updateURL     https://raw.githubusercontent.com/zvukoper/tpm_gpf_script/main/gegi-proofread.user.js
 // @downloadURL   https://raw.githubusercontent.com/zvukoper/tpm_gpf_script/main/gegi-proofread.user.js
@@ -25,6 +26,7 @@
   const GUTTER_ID = 'gegi-proofread-gutter';
   const ACTIVE_ID = 'gegi-proofread-active';
   const ISSUE_CARD_ID = 'gegi-proofread-current-issue';
+  const REDMINE_TASK_URL = 'https://redmine.gegi.co/my/page';
 
   let currentArticleId = '';
   let currentChannel = '';
@@ -59,7 +61,7 @@
   }
 
   function getArticleId() {
-    const match = location.pathname.match(/^\/a\/solutions\/articles\/([^/]+)\/edit(?:[/?#]|$)/);
+    const match = location.pathname.match(/^\/a\/solutions\/articles\/([^/]+)(?:\/edit)?\/?$/);
     return match ? match[1] : '';
   }
 
@@ -312,7 +314,8 @@
       '#gegi-proofread-gutter .local{background:#d900d9}',
       '#gegi-proofread-gutter .fixed{display:none}',
       '#gegi-proofread-toolbar .gegi-proofreader-button{margin-right:2px}',
-      '#gegi-proofread-toolbar .gegi-prev-button,#gegi-proofread-toolbar .gegi-next-button{min-width:88px}'
+      '#gegi-proofread-toolbar .gegi-prev-button,#gegi-proofread-toolbar .gegi-next-button{min-width:88px}',
+      '#gegi-proofread-toolbar .gegi-finish-button{border-color:rgba(255,153,70,.75);background:rgba(255,120,35,.14)}'
     ].join('\n');
     document.head.appendChild(style);
   }
@@ -340,7 +343,7 @@
     if (document.getElementById(UI_ID)) return;
 
     toolbarRetryTimer = setInterval(() => {
-      if (!isEditMode()) {
+      if (!currentChannel) {
         clearInterval(toolbarRetryTimer);
         toolbarRetryTimer = null;
         return;
@@ -353,8 +356,26 @@
     }, 500);
   }
 
+  function updateToolbarMode() {
+    const toolbar = document.getElementById(UI_ID);
+    if (!toolbar) return;
+    const edit = isEditMode();
+    for (const selector of [
+      '.gegi-proofreader-button',
+      '.gegi-fixed-button',
+      '.gegi-ignore-button',
+      '.gegi-prev-button',
+      '.gegi-next-button'
+    ]) {
+      const button = toolbar.querySelector(selector);
+      if (button) button.style.display = edit ? '' : 'none';
+    }
+    const finish = toolbar.querySelector('.gegi-finish-button');
+    if (finish) finish.style.display = '';
+  }
+
   function installToolbar() {
-    if (!isEditMode()) return;
+    if (!currentChannel) return;
     if (document.getElementById(UI_ID)) {
       setDiagnostic('ui', 'установлены');
       return;
@@ -373,6 +394,7 @@
     const ignored = createBridgeButton('X', 'gegi-ignore-button');
     const previous = createBridgeButton('Предыдущая', 'gegi-prev-button');
     const next = createBridgeButton('Следующая', 'gegi-next-button');
+    const finish = createBridgeButton('Завершить задачу', 'gegi-finish-button');
     fixed.title = 'Пометить текущую ошибку как исправленную. Текст в Freshdesk не изменяется.';
     fixed.setAttribute('aria-label', fixed.title);
     ignored.title = 'Пометить текущую ошибку как «Не ошибка». Текст в Freshdesk не изменяется.';
@@ -381,6 +403,7 @@
     ignored.disabled = true;
     previous.disabled = true;
     next.disabled = true;
+    finish.title = 'Завершить задачу и перейти на страницу задач Redmine.';
 
     proofreader.addEventListener('click', event => {
       event.preventDefault();
@@ -407,9 +430,15 @@
       event.stopPropagation();
       void moveActiveIssue(1);
     });
+    finish.addEventListener('click', event => {
+      event.preventDefault();
+      event.stopPropagation();
+      void completeFreshdeskTask();
+    });
 
-    toolbar.append(status, proofreader, fixed, ignored, previous, next);
+    toolbar.append(status, proofreader, fixed, ignored, previous, next, finish);
     document.body.appendChild(toolbar);
+    updateToolbarMode();
     setDiagnostic('ui', 'установлены');
   }
 
@@ -701,6 +730,12 @@
         return;
       }
 
+      if (state.source === 'proofreader' && state.type === 'task-complete') {
+        resetFreshdeskTaskUi();
+        lastServerRevision = Number(state.revision) || lastServerRevision;
+        return;
+      }
+
       if (state.source === 'proofreader' && state.type === 'final-text-request') {
         const editor = findEditor();
         if (!editor) return;
@@ -747,6 +782,75 @@
       void refreshFromServer();
       scheduleRenderMarkers();
     }, 400);
+  }
+
+  function resetFreshdeskTaskUi() {
+    currentState = null;
+    lastServerRevision = 0;
+    clearActiveHighlight();
+    document.getElementById(ISSUE_CARD_ID)?.remove();
+    const gutter = document.getElementById(GUTTER_ID);
+    if (gutter) {
+      gutter.style.display = 'none';
+      gutter.innerHTML = '';
+    }
+    updateToolbarState();
+    setStatus('задача завершена', 'ok');
+  }
+
+  function openRedmineAfterTask() {
+    if (isEditMode()) {
+      location.href = REDMINE_TASK_URL;
+      return;
+    }
+
+    try {
+      if (typeof GM_openInTab === 'function') {
+        GM_openInTab(REDMINE_TASK_URL, {
+          active: true,
+          insert: true,
+          setParent: true
+        });
+      } else {
+        window.open(REDMINE_TASK_URL, '_blank', 'noopener');
+      }
+    } catch {
+      location.href = REDMINE_TASK_URL;
+      return;
+    }
+
+    window.setTimeout(() => {
+      try { window.close(); } catch {}
+    }, 150);
+
+    window.setTimeout(() => {
+      if (!document.hidden) location.href = REDMINE_TASK_URL;
+    }, 600);
+  }
+
+  async function completeFreshdeskTask() {
+    if (isEditMode() && !window.confirm('Возможно текст не сохранен')) return;
+
+    try {
+      await gmRequest({
+        method: 'POST',
+        url: MEDIATOR + '/api/sync/publish',
+        body: {
+          channel: currentChannel,
+          source: 'freshdesk',
+          type: 'task-complete',
+          activeIndex: -1,
+          activeIssueId: '',
+          sourceSelectionStart: 0,
+          issues: [],
+          importId: ''
+        }
+      });
+      resetFreshdeskTaskUi();
+      openRedmineAfterTask();
+    } catch (error) {
+      setStatus('не удалось завершить задачу: ' + error.message, 'error');
+    }
   }
 
   async function sendCurrentArticleToProofreader() {
@@ -812,7 +916,7 @@
     const edit = isEditMode();
     const nextArticleId = getArticleId();
     const nextChannel = nextArticleId ? 'freshdesk:' + nextArticleId : '';
-    const routeKey = edit && nextChannel ? nextChannel : '';
+    const routeKey = nextChannel ? (edit ? 'edit:' : 'view:') + nextChannel : '';
 
     if (routeKey !== lastRouteKey) {
       lastRouteKey = routeKey;
@@ -828,7 +932,7 @@
       currentChannel = nextChannel;
     }
 
-    if (!edit || !currentChannel) {
+    if (!currentChannel) {
       removeUi();
       if (pollTimer) {
         clearInterval(pollTimer);
@@ -838,6 +942,27 @@
     }
 
     installStyle();
+    installToolbar();
+    updateToolbarMode();
+
+    if (!edit) {
+      currentEditor = null;
+      editorObserver?.disconnect();
+      editorObserver = null;
+      clearActiveHighlight();
+      document.getElementById(ISSUE_CARD_ID)?.remove();
+      const gutter = document.getElementById(GUTTER_ID);
+      if (gutter) {
+        gutter.style.display = 'none';
+        gutter.innerHTML = '';
+      }
+      if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+      }
+      return;
+    }
+
     const nextEditor = findEditor();
     if (nextEditor !== currentEditor) {
       currentEditor = nextEditor;
