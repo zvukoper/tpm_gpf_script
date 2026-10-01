@@ -1112,6 +1112,7 @@
   function resetFreshdeskTaskUi() {
     currentState = null;
     lastServerRevision = 0;
+    currentEditor = null;
     clearActiveHighlight();
     document.getElementById(ISSUE_CARD_ID)?.remove();
     const gutter = document.getElementById(GUTTER_ID);
@@ -1124,11 +1125,6 @@
   }
 
   function openRedmineAfterTask() {
-    if (isEditMode()) {
-      location.href = REDMINE_TASK_URL;
-      return;
-    }
-
     try {
       if (typeof GM_openInTab === 'function') {
         GM_openInTab(REDMINE_TASK_URL, {
@@ -1136,21 +1132,15 @@
           insert: true,
           setParent: true
         });
-      } else {
-        window.open(REDMINE_TASK_URL, '_blank', 'noopener');
+        return;
       }
-    } catch {
-      location.href = REDMINE_TASK_URL;
-      return;
+      const redmineWindow = window.open(REDMINE_TASK_URL, '_blank', 'noopener,noreferrer');
+      if (!redmineWindow) {
+        setStatus('Redmine не удалось открыть в новой вкладке', 'error');
+      }
+    } catch (error) {
+      setStatus('не удалось открыть Redmine в новой вкладке: ' + error.message, 'error');
     }
-
-    window.setTimeout(() => {
-      try { window.close(); } catch {}
-    }, 150);
-
-    window.setTimeout(() => {
-      if (!document.hidden) location.href = REDMINE_TASK_URL;
-    }, 600);
   }
 
   async function completeFreshdeskTask() {
