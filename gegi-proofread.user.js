@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GEGI AI Proofreader Bridge
 // @namespace    gegi-ai-proofreader
-// @version      1.2.0
+// @version      1.3.0
 // @description  Визуальный мост Freshdesk → GEGI AI Proofreader с поддержкой SPA-перехода в режим Edit. Текст Freshdesk не изменяет.
 // @match        https://*.freshdesk.com/a/solutions/articles/*
 // @match        https://redmine.gegi.co/my/page*
@@ -31,6 +31,7 @@
   const ISSUE_CARD_ID = 'gegi-proofread-current-issue';
   const REDMINE_TASK_URL = 'https://redmine.gegi.co/my/page';
   const REDMINE_TASK_STORAGE_KEY = 'gegi.redmine.last-task';
+  const REDMINE_STATUS_ID = 'gegi-redmine-task-status';
 
   let currentArticleId = '';
   let currentChannel = '';
@@ -120,15 +121,88 @@
 
   function extractRedmineTaskTitleFromLink(link, taskUrl) {
     const candidates = [
+      link?.getAttribute('data-title'),
       link?.getAttribute('aria-label'),
       link?.getAttribute('title'),
       link?.textContent
     ];
+
+    const containers = [
+      link?.closest('.subject'),
+      link?.closest('tr'),
+      link?.closest('li'),
+      link?.closest('.issue'),
+      link?.parentElement
+    ].filter(Boolean);
+
+    for (const container of containers) {
+      const subjectLinks = [...container.querySelectorAll('a[href]')]
+        .filter(candidate => candidate !== link)
+        .filter(candidate => normalizeRedmineTaskUrl(candidate.href))
+        .map(candidate => candidate.textContent || '');
+      candidates.push(...subjectLinks);
+    }
+
     for (const candidate of candidates) {
       const title = cleanRedmineTaskTitle(candidate, taskUrl);
       if (title) return title;
     }
     return '';
+  }
+
+  function renderRedmineStatus(message, state = 'info', details = '') {
+    let panel = document.getElementById(REDMINE_STATUS_ID);
+    if (!panel) {
+      panel = document.createElement('div');
+      panel.id = REDMINE_STATUS_ID;
+      document.body.appendChild(panel);
+    }
+    panel.dataset.state = state;
+
+    const headline = document.createElement('div');
+    headline.className = 'gegi-redmine-status-headline';
+    headline.textContent = message;
+
+    const detail = document.createElement('div');
+    detail.className = 'gegi-redmine-status-detail';
+    detail.textContent = details;
+
+    panel.replaceChildren(headline);
+    if (details) panel.appendChild(detail);
+  }
+
+  function installRedmineStatusPanel() {
+    if (document.getElementById(REDMINE_STATUS_ID)) return;
+
+    const style = document.createElement('style');
+    style.id = REDMINE_STATUS_ID + '-style';
+    style.textContent = [
+      '#' + REDMINE_STATUS_ID + '{position:fixed;top:10px;right:10px;z-index:2147483647;width:min(460px,calc(100vw - 20px));box-sizing:border-box;padding:9px 11px;background:rgba(27,31,35,.97);border:1px solid rgba(255,255,255,.2);border-radius:5px;box-shadow:0 3px 18px rgba(0,0,0,.3);font:11px/15px -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;color:#fff}',
+      '#' + REDMINE_STATUS_ID + '[data-state="ok"]{border-color:rgba(86,190,103,.7)}',
+      '#' + REDMINE_STATUS_ID + '[data-state="info"]{border-color:rgba(104,155,255,.65)}',
+      '#' + REDMINE_STATUS_ID + '[data-state="warn"]{border-color:rgba(255,185,73,.75)}',
+      '#' + REDMINE_STATUS_ID + '[data-state="error"]{border-color:rgba(255,91,91,.8)}',
+      '#' + REDMINE_STATUS_ID + ' .gegi-redmine-status-headline{font-weight:700}',
+      '#' + REDMINE_STATUS_ID + ' .gegi-redmine-status-detail{margin-top:3px;color:#c8d0d7;word-break:break-word}'
+    ].join('');
+    document.head.appendChild(style);
+
+    const stored = readStoredTaskContext();
+    if (stored?.taskTitle) {
+      renderRedmineStatus(
+        'Название и URL перехвачены',
+        'ok',
+        stored.taskTitle + ' · #' + extractRedmineTaskNumber(stored.taskUrl) + ' · ' + stored.taskUrl
+      );
+    } else if (stored?.taskUrl) {
+      renderRedmineStatus(
+        'GEGI AI Proofreader: скрипт активен, URL последней задачи сохранён.',
+        'warn',
+        '#' + extractRedmineTaskNumber(stored.taskUrl) + ' · ' + stored.taskUrl
+      );
+    } else {
+      renderRedmineStatus('GEGI AI Proofreader: скрипт активен, готов к перехвату задачи.', 'info');
+    }
   }
 
   function updateStoredTaskTitle(taskUrl, startedAt, taskTitle) {
@@ -140,7 +214,14 @@
   }
 
   function loadRedmineTaskTitle(taskUrl, startedAt) {
-    GM_xmlhttpRequest({
+    return new Promise(resolve => {
+      let settled = false;
+      const finish = value => {
+        if (settled) return;
+        settled = true;
+        resolve(value);
+      };
+      GM_xmlhttpRequest({
       method: 'GET',
       url: taskUrl,
       headers: { Accept: 'text/html' },
@@ -160,34 +241,90 @@
           const title = cleanRedmineTaskTitle(candidate.value, taskUrl);
           if (title) {
             updateStoredTaskTitle(taskUrl, startedAt, title);
+            finish(title);
             return;
           }
         }
-      }
+        finish('');
+      },
+      onerror: () => finish('')
     });
+    window.setTimeout(() => finish(''), 1200);
+  });
   }
 
-  function rememberRedmineTask(href, titleHint = '') {
+  async function rememberRedmineTask(href, titleHint = '') {
     const taskUrl = normalizeRedmineTaskUrl(href);
-    if (!taskUrl) return;
+    if (!taskUrl) return null;
+
     const context = {
       taskUrl,
       startedAt: Date.now(),
       taskTitle: cleanRedmineTaskTitle(titleHint, taskUrl)
     };
+
     GM_setValue(REDMINE_TASK_STORAGE_KEY, context);
-    void postTaskContext(context).catch(() => {});
-    loadRedmineTaskTitle(taskUrl, context.startedAt);
+    try {
+      await postTaskContext(context);
+    } catch {}
+
+    if (context.taskTitle) {
+      renderRedmineStatus(
+        'Название и URL перехвачены',
+        'ok',
+        context.taskTitle + ' · #' + extractRedmineTaskNumber(taskUrl) + ' · ' + taskUrl
+      );
+      return context;
+    }
+
+    renderRedmineStatus(
+      'URL задачи перехвачен, название ищется…',
+      'warn',
+      '#' + extractRedmineTaskNumber(taskUrl) + ' · ' + taskUrl
+    );
+
+    const taskTitle = await loadRedmineTaskTitle(taskUrl, context.startedAt);
+    if (taskTitle) {
+      context.taskTitle = taskTitle;
+      renderRedmineStatus(
+        'Название и URL перехвачены',
+        'ok',
+        taskTitle + ' · #' + extractRedmineTaskNumber(taskUrl) + ' · ' + taskUrl
+      );
+    } else {
+      renderRedmineStatus(
+        'URL перехвачен, название не найдено',
+        'error',
+        '#' + extractRedmineTaskNumber(taskUrl) + ' · ' + taskUrl
+      );
+    }
+    return context;
   }
 
   function setupRedmineTaskCapture() {
+    installRedmineStatusPanel();
+
     document.addEventListener('click', event => {
-      if (event.button !== 0) return;
+      if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
       const link = event.target?.closest?.('a[href]');
       if (!link) return;
       const taskUrl = normalizeRedmineTaskUrl(link.href);
       if (!taskUrl) return;
-      rememberRedmineTask(taskUrl, extractRedmineTaskTitleFromLink(link, taskUrl));
+
+      const titleHint = extractRedmineTaskTitleFromLink(link, taskUrl);
+      const opensNewTab = link.target === '_blank';
+      if (opensNewTab) {
+        void rememberRedmineTask(taskUrl, titleHint);
+        return;
+      }
+
+      event.preventDefault();
+
+      void rememberRedmineTask(taskUrl, titleHint).finally(() => {
+        window.setTimeout(() => {
+          location.href = taskUrl;
+        }, 120);
+      });
     }, true);
   }
 
