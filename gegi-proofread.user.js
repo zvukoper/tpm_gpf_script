@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         GEGI AI Proofreader Bridge
 // @namespace    gegi-ai-proofreader
-// @version      1.0.6
-// @description  Только визуальный мост Freshdesk → GEGI AI Proofreader: gutter, прокрутка и синхронизация. Текст Freshdesk не изменяет.
-// @match        https://*.freshdesk.com/a/solutions/articles/*/edit*
+// @version      1.0.7
+// @description  Визуальный мост Freshdesk → GEGI AI Proofreader с поддержкой SPA-перехода в режим Edit. Текст Freshdesk не изменяет.
+// @match        https://*.freshdesk.com/a/solutions/articles/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -315,7 +315,7 @@
     document.getElementById(UI_ID)?.remove();
     document.getElementById(GUTTER_ID)?.remove();
     document.getElementById(ACTIVE_ID)?.remove();
-    document.getElementById(STATUS_ID)?.remove();
+    document.getElementById('gegi-proofread-status')?.remove();
     editorObserver?.disconnect();
     editorObserver = null;
     if (toolbarRetryTimer) {
