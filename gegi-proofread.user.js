@@ -24,6 +24,7 @@
   const UI_ID = 'gegi-proofread-toolbar';
   const GUTTER_ID = 'gegi-proofread-gutter';
   const ACTIVE_ID = 'gegi-proofread-active';
+  const ISSUE_CARD_ID = 'gegi-proofread-current-issue';
 
   let currentArticleId = '';
   let currentChannel = '';
@@ -295,12 +296,17 @@
       '#gegi-proofread-toolbar .gegi-panel-button:hover:not(:disabled){background:rgba(255,255,255,.16)}',
       '#gegi-proofread-toolbar .gegi-panel-button:disabled{opacity:.42;cursor:default}',
       '#gegi-proofread-toolbar .gegi-proofreader-button{border-color:rgba(94,163,255,.65)}',
+      '#gegi-proofread-toolbar .gegi-fixed-button,#gegi-proofread-toolbar .gegi-ignore-button{min-width:24px;padding:0 5px;font-size:13px;line-height:16px}',
       '#gegi-proofread-toolbar .gegi-prev-button,#gegi-proofread-toolbar .gegi-next-button{min-width:76px}',
       '#gegi-proofread-status{display:none}',
       '#gegi-proofread-toolbar button.gegi-sync-button{min-width:0}',
       '#gegi-proofread-gutter{position:fixed;z-index:2147483645;display:none;width:18px;background:#c9c9c9;border-right:1px solid rgba(28,32,35,.15);pointer-events:none;box-sizing:border-box}',
       '#gegi-proofread-gutter .gegi-gutter-marker{position:absolute;left:4px;width:10px;height:10px;border-radius:50%;box-sizing:border-box}',
       '#gegi-proofread-active{position:fixed;z-index:2147483644;pointer-events:none;box-sizing:border-box}',
+      '#gegi-proofread-current-issue{position:fixed;z-index:2147483643;width:280px;box-sizing:border-box;padding:8px 9px;background:rgba(34,38,42,.97);border:1px solid rgba(255,220,80,.55);border-radius:4px;box-shadow:0 3px 14px rgba(0,0,0,.35);color:#fff;font:11px/14px -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}',
+      '#gegi-proofread-current-issue .issue-type{font-weight:700;color:#ffdf63;margin-bottom:4px}',
+      '#gegi-proofread-current-issue .issue-quote{color:#f3f3f3;margin-bottom:4px;word-break:break-word}',
+      '#gegi-proofread-current-issue .issue-status{color:#9bb8ff}',
       '#gegi-proofread-gutter .error{background:#e32929}',
       '#gegi-proofread-gutter .review{background:#d9a810}',
       '#gegi-proofread-gutter .local{background:#d900d9}',
@@ -315,6 +321,7 @@
     document.getElementById(UI_ID)?.remove();
     document.getElementById(GUTTER_ID)?.remove();
     document.getElementById(ACTIVE_ID)?.remove();
+    document.getElementById(ISSUE_CARD_ID)?.remove();
     document.getElementById('gegi-proofread-status')?.remove();
     editorObserver?.disconnect();
     editorObserver = null;
@@ -362,8 +369,16 @@
     status.textContent = 'GEGI AI Proofreader: запуск...';
 
     const proofreader = createBridgeButton('В GEGI Proofreader', 'gegi-proofreader-button');
+    const fixed = createBridgeButton('✓', 'gegi-fixed-button');
+    const ignored = createBridgeButton('X', 'gegi-ignore-button');
     const previous = createBridgeButton('Предыдущая', 'gegi-prev-button');
     const next = createBridgeButton('Следующая', 'gegi-next-button');
+    fixed.title = 'Пометить текущую ошибку как исправленную. Текст в Freshdesk не изменяется.';
+    fixed.setAttribute('aria-label', fixed.title);
+    ignored.title = 'Пометить текущую ошибку как «Не ошибка». Текст в Freshdesk не изменяется.';
+    ignored.setAttribute('aria-label', ignored.title);
+    fixed.disabled = true;
+    ignored.disabled = true;
     previous.disabled = true;
     next.disabled = true;
 
@@ -371,6 +386,16 @@
       event.preventDefault();
       event.stopPropagation();
       void sendCurrentArticleToProofreader();
+    });
+    fixed.addEventListener('click', event => {
+      event.preventDefault();
+      event.stopPropagation();
+      void resolveActiveIssue('fixed');
+    });
+    ignored.addEventListener('click', event => {
+      event.preventDefault();
+      event.stopPropagation();
+      void resolveActiveIssue('ignored');
     });
     previous.addEventListener('click', event => {
       event.preventDefault();
@@ -383,7 +408,7 @@
       void moveActiveIssue(1);
     });
 
-    toolbar.append(status, proofreader, previous, next);
+    toolbar.append(status, proofreader, fixed, ignored, previous, next);
     document.body.appendChild(toolbar);
     setDiagnostic('ui', 'установлены');
   }
@@ -407,16 +432,50 @@
       box.style.top = Math.max(0, rect.top - 2) + 'px';
       box.style.width = Math.max(2, rect.width + 4) + 'px';
       box.style.height = Math.max(2, rect.height + 4) + 'px';
-      box.style.border = '2px solid rgba(255,165,0,.92)';
+      box.style.border = 'none';
       box.style.borderRadius = '2px';
       box.style.boxSizing = 'border-box';
-      box.style.background = 'rgba(255,165,0,.08)';
-      box.style.boxShadow = '0 0 0 1px rgba(0,0,0,.25),0 0 8px rgba(255,165,0,.45)';
+      box.style.background = 'rgba(255,220,0,.28)';
+      box.style.boxShadow = 'none';
       layer.appendChild(box);
     }
     document.body.appendChild(layer);
   }
 
+
+  function renderCurrentIssueCard(issue, range, editorRect) {
+    document.getElementById(ISSUE_CARD_ID)?.remove();
+    if (!issue || !range || !editorRect) return;
+
+    const rect = [...range.getClientRects()].find(item => item.width > 0 && item.height > 0);
+    if (!rect) return;
+
+    const card = document.createElement('div');
+    card.id = ISSUE_CARD_ID;
+
+    const type = document.createElement('div');
+    type.className = 'issue-type';
+    type.textContent = issue.reason || issue.category || 'Ошибка';
+
+    const quote = document.createElement('div');
+    quote.className = 'issue-quote';
+    quote.textContent = '«' + (issue.quote || '') + '»';
+
+    const status = document.createElement('div');
+    status.className = 'issue-status';
+    status.textContent = 'Текущая ошибка';
+
+    card.append(type, quote, status);
+    document.body.appendChild(card);
+
+    const cardWidth = 280;
+    const gutterLeft = editorRect.left - 22;
+    const left = Math.max(6, gutterLeft - cardWidth - 8);
+    const maxTop = Math.max(6, window.innerHeight - card.offsetHeight - 6);
+    const top = Math.max(6, Math.min(maxTop, rect.top - 8));
+    card.style.left = Math.round(left) + 'px';
+    card.style.top = Math.round(top) + 'px';
+  }
 
   function ensureGutter() {
     let gutter = document.getElementById(GUTTER_ID);
@@ -457,6 +516,7 @@
     gutter.style.height = Math.round(editorRect.height) + 'px';
     gutter.innerHTML = '';
     let activeRange = null;
+    let activeIssue = null;
     const activeIndex = Number.isInteger(currentState.activeIndex) ? currentState.activeIndex : -1;
 
     for (const [index, issue] of (currentState.issues || []).entries()) {
@@ -469,10 +529,14 @@
       marker.className = 'gegi-gutter-marker ' + (issue.severity || 'review');
       marker.style.top = Math.max(0, Math.round(rect.top - editorRect.top + rect.height / 2 - 5)) + 'px';
       gutter.appendChild(marker);
-      if (index === activeIndex) activeRange = range;
+      if (index === activeIndex) {
+        activeRange = range;
+        activeIssue = issue;
+      }
     }
 
     renderActiveHighlight(activeRange);
+    renderCurrentIssueCard(activeIssue, activeRange, editorRect);
   }
 
   function findScrollContainer(element) {
@@ -505,12 +569,17 @@
   function updateToolbarState() {
     const toolbar = document.getElementById(UI_ID);
     if (!toolbar) return;
+    const fixed = toolbar.querySelector('.gegi-fixed-button');
+    const ignored = toolbar.querySelector('.gegi-ignore-button');
     const previous = toolbar.querySelector('.gegi-prev-button');
     const next = toolbar.querySelector('.gegi-next-button');
     const openIndexes = (currentState?.issues || [])
       .map((issue, index) => isResolvedIssue(issue) ? -1 : index)
       .filter(index => index >= 0);
     const activePosition = openIndexes.indexOf(Number.isInteger(currentState?.activeIndex) ? currentState.activeIndex : -1);
+    const activeIsOpen = activePosition >= 0;
+    fixed.disabled = !activeIsOpen;
+    ignored.disabled = !activeIsOpen;
     previous.disabled = openIndexes.length < 2 || activePosition <= 0;
     next.disabled = openIndexes.length < 2 || activePosition < 0 || activePosition >= openIndexes.length - 1;
   }
@@ -542,6 +611,57 @@
           activeIndex: next,
           sourceSelectionStart: Number(currentState.sourceSelectionStart) || 0,
           issues: currentState.issues,
+          importId: ''
+        }
+      });
+    } catch {}
+  }
+
+  async function resolveActiveIssue(status) {
+    if (!currentState || !Array.isArray(currentState.issues)) return;
+    const activeIndex = Number.isInteger(currentState.activeIndex) ? currentState.activeIndex : -1;
+    if (activeIndex < 0 || activeIndex >= currentState.issues.length) return;
+    if (isResolvedIssue(currentState.issues[activeIndex])) return;
+
+    const issues = currentState.issues.map((issue, index) => {
+      if (index !== activeIndex) return issue;
+      return {
+        ...issue,
+        fixed: status === 'fixed',
+        ignored: status === 'ignored',
+        status
+      };
+    });
+
+    const openIndexes = issues
+      .map((issue, index) => isResolvedIssue(issue) ? -1 : index)
+      .filter(index => index >= 0);
+    const currentPosition = Math.max(0, openIndexes.indexOf(activeIndex));
+    const nextIndex = openIndexes.length
+      ? openIndexes[Math.min(currentPosition, openIndexes.length - 1)]
+      : -1;
+
+    currentState = {
+      ...currentState,
+      type: 'issues',
+      activeIndex: nextIndex,
+      issues
+    };
+    persistState();
+    updateToolbarState();
+    scheduleRenderMarkers();
+
+    try {
+      await gmRequest({
+        method: 'POST',
+        url: MEDIATOR + '/api/sync/publish',
+        body: {
+          channel: currentChannel,
+          source: 'freshdesk',
+          type: 'issues',
+          activeIndex: nextIndex,
+          sourceSelectionStart: Number(currentState.sourceSelectionStart) || 0,
+          issues,
           importId: ''
         }
       });
@@ -665,23 +785,8 @@
       updateToolbarState();
       scheduleRenderMarkers();
 
-      const url = MEDIATOR + '/?import=' + encodeURIComponent(imported.importId) +
-        '&source=freshdesk&sourceUrl=' + encodeURIComponent(location.href) +
-        '&sync=' + encodeURIComponent(currentChannel);
-
-      try {
-        if (proofreaderWindow && !proofreaderWindow.closed) {
-          proofreaderWindow.focus();
-        } else {
-          proofreaderWindow = window.open(url, 'GEGI_AI_PROOFREADER');
-        }
-        if (!proofreaderWindow) alert('Firefox заблокировал открытие окна GEGI AI Proofreader.');
-      } catch {
-        window.open(url, 'GEGI_AI_PROOFREADER');
-      }
-    } catch (error) {
-      alert('GEGI AI Proofreader: ' + error.message);
-    }
+      setStatus('текст передан в открытую вкладку Proofreader', 'ok');
+      renderDiagnosticStatus();
   }
 
   function setupEditorObserver() {
