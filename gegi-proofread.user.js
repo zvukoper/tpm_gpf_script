@@ -624,6 +624,11 @@
     if (activeIndex < 0 || activeIndex >= currentState.issues.length) return;
     if (isResolvedIssue(currentState.issues[activeIndex])) return;
 
+    const openBefore = currentState.issues
+      .map((issue, index) => isResolvedIssue(issue) ? -1 : index)
+      .filter(index => index >= 0);
+    const activePosition = Math.max(0, openBefore.indexOf(activeIndex));
+
     const issues = currentState.issues.map((issue, index) => {
       if (index !== activeIndex) return issue;
       return {
@@ -637,9 +642,8 @@
     const openIndexes = issues
       .map((issue, index) => isResolvedIssue(issue) ? -1 : index)
       .filter(index => index >= 0);
-    const currentPosition = Math.max(0, openIndexes.indexOf(activeIndex));
     const nextIndex = openIndexes.length
-      ? openIndexes[Math.min(currentPosition, openIndexes.length - 1)]
+      ? openIndexes[Math.min(activePosition, openIndexes.length - 1)]
       : -1;
 
     currentState = {
