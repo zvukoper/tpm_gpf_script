@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GEGI AI Proofreader Bridge
 // @namespace    gegi-ai-proofreader
-// @version      1.0.4
+// @version      1.0.6
 // @description  Только визуальный мост Freshdesk → GEGI AI Proofreader: gutter, прокрутка и синхронизация. Текст Freshdesk не изменяет.
 // @match        https://*.freshdesk.com/a/solutions/articles/*/edit*
 // @grant        GM_xmlhttpRequest
@@ -23,7 +23,7 @@
   const STYLE_ID = 'gegi-proofread-bridge-style';
   const UI_ID = 'gegi-proofread-toolbar';
   const GUTTER_ID = 'gegi-proofread-gutter';
-  const STATUS_ID = 'gegi-proofread-status';
+  const ACTIVE_ID = 'gegi-proofread-active';
 
   let currentArticleId = '';
   let currentChannel = '';
@@ -36,6 +36,8 @@
   let editorObserver = null;
   let actionTimer = null;
   let toolbarRetryTimer = null;
+  let routeMonitorTimer = null;
+  let lastRouteKey = '';
   let proofreaderWindow = null;
   const diagnostic = {
     editor: 'проверяю',
@@ -298,6 +300,7 @@
       '#gegi-proofread-toolbar button.gegi-sync-button{min-width:0}',
       '#gegi-proofread-gutter{position:fixed;z-index:2147483645;display:none;width:18px;background:#c9c9c9;border-right:1px solid rgba(28,32,35,.15);pointer-events:none;box-sizing:border-box}',
       '#gegi-proofread-gutter .gegi-gutter-marker{position:absolute;left:4px;width:10px;height:10px;border-radius:50%;box-sizing:border-box}',
+      '#gegi-proofread-active{position:fixed;z-index:2147483644;pointer-events:none;box-sizing:border-box}',
       '#gegi-proofread-gutter .error{background:#e32929}',
       '#gegi-proofread-gutter .review{background:#d9a810}',
       '#gegi-proofread-gutter .local{background:#d900d9}',
@@ -311,6 +314,7 @@
   function removeUi() {
     document.getElementById(UI_ID)?.remove();
     document.getElementById(GUTTER_ID)?.remove();
+    document.getElementById(ACTIVE_ID)?.remove();
     document.getElementById(STATUS_ID)?.remove();
     editorObserver?.disconnect();
     editorObserver = null;
@@ -384,6 +388,36 @@
     setDiagnostic('ui', 'установлены');
   }
 
+  function clearActiveHighlight() {
+    document.getElementById(ACTIVE_ID)?.remove();
+  }
+
+  function renderActiveHighlight(range) {
+    clearActiveHighlight();
+    if (!range) return;
+    const rects = [...range.getClientRects()].filter(rect => rect.width > 0 && rect.height > 0);
+    if (!rects.length) return;
+
+    const layer = document.createElement('div');
+    layer.id = ACTIVE_ID;
+    for (const rect of rects) {
+      const box = document.createElement('div');
+      box.style.position = 'fixed';
+      box.style.left = Math.max(0, rect.left - 2) + 'px';
+      box.style.top = Math.max(0, rect.top - 2) + 'px';
+      box.style.width = Math.max(2, rect.width + 4) + 'px';
+      box.style.height = Math.max(2, rect.height + 4) + 'px';
+      box.style.border = '2px solid rgba(255,165,0,.92)';
+      box.style.borderRadius = '2px';
+      box.style.boxSizing = 'border-box';
+      box.style.background = 'rgba(255,165,0,.08)';
+      box.style.boxShadow = '0 0 0 1px rgba(0,0,0,.25),0 0 8px rgba(255,165,0,.45)';
+      layer.appendChild(box);
+    }
+    document.body.appendChild(layer);
+  }
+
+
   function ensureGutter() {
     let gutter = document.getElementById(GUTTER_ID);
     if (!gutter) {
@@ -406,12 +440,14 @@
     if (!isEditMode() || !currentEditor || !currentState) {
       const gutter = document.getElementById(GUTTER_ID);
       if (gutter) gutter.style.display = 'none';
+      clearActiveHighlight();
       return;
     }
     const editorRect = currentEditor.getBoundingClientRect();
     if (editorRect.width < 100 || editorRect.height < 20) {
       const gutter = document.getElementById(GUTTER_ID);
       if (gutter) gutter.style.display = 'none';
+      clearActiveHighlight();
       return;
     }
     const gutter = ensureGutter();
@@ -420,8 +456,10 @@
     gutter.style.top = Math.round(editorRect.top) + 'px';
     gutter.style.height = Math.round(editorRect.height) + 'px';
     gutter.innerHTML = '';
+    let activeRange = null;
+    const activeIndex = Number.isInteger(currentState.activeIndex) ? currentState.activeIndex : -1;
 
-    for (const issue of currentState.issues || []) {
+    for (const [index, issue] of (currentState.issues || []).entries()) {
       if (isResolvedIssue(issue)) continue;
       const range = issueRange(issue);
       if (!range) continue;
@@ -431,7 +469,10 @@
       marker.className = 'gegi-gutter-marker ' + (issue.severity || 'review');
       marker.style.top = Math.max(0, Math.round(rect.top - editorRect.top + rect.height / 2 - 5)) + 'px';
       gutter.appendChild(marker);
+      if (index === activeIndex) activeRange = range;
     }
+
+    renderActiveHighlight(activeRange);
   }
 
   function findScrollContainer(element) {
@@ -520,11 +561,47 @@
         url: MEDIATOR + '/api/sync/state?channel=' + encodeURIComponent(currentChannel)
       });
       const state = data.state;
-      if (!state) return;
+
+      // The server is authoritative. GM storage is only a same-page cache and
+      // must never resurrect old issues after the mediator has restarted.
+      if (!state) {
+        if (currentState) {
+          currentState = null;
+          lastServerRevision = 0;
+          updateToolbarState();
+          clearActiveHighlight();
+          scheduleRenderMarkers();
+        }
+        return;
+      }
+
+      if (state.source === 'proofreader' && state.type === 'final-text-request') {
+        const editor = findEditor();
+        if (!editor) return;
+        const finalText = renderedText(editor);
+        await gmRequest({
+          method: 'POST',
+          url: MEDIATOR + '/api/sync/publish',
+          body: {
+            channel: currentChannel,
+            source: 'freshdesk',
+            type: 'final-text',
+            activeIndex: Number.isInteger(state.activeIndex) ? state.activeIndex : -1,
+            sourceSelectionStart: Number(state.sourceSelectionStart) || 0,
+            issues: currentState?.issues || [],
+            importId: '',
+            text: finalText,
+            requestId: String(state.requestId || '')
+          }
+        });
+        return;
+      }
+
       if (Number(state.revision) <= lastServerRevision) return;
       lastServerRevision = Number(state.revision);
 
       if (state.source === 'freshdesk') return;
+
       currentState = state;
       persistState();
       updateToolbarState();
@@ -537,34 +614,9 @@
     } catch {}
   }
 
-  async function ensureServerHasCachedState() {
-    if (!currentState || !currentChannel) return;
-    try {
-      const data = await gmRequest({
-        method: 'GET',
-        url: MEDIATOR + '/api/sync/state?channel=' + encodeURIComponent(currentChannel)
-      });
-      if (data.state || !currentState.issues?.length) return;
-      await gmRequest({
-        method: 'POST',
-        url: MEDIATOR + '/api/sync/publish',
-        body: {
-          channel: currentChannel,
-          source: 'freshdesk',
-          type: 'active',
-          activeIndex: Number.isInteger(currentState.activeIndex) ? currentState.activeIndex : -1,
-          sourceSelectionStart: Number(currentState.sourceSelectionStart) || 0,
-          issues: currentState.issues,
-          importId: ''
-        }
-      });
-    } catch {}
-  }
-
   function startPolling() {
     if (pollTimer) clearInterval(pollTimer);
     void refreshFromServer();
-    void ensureServerHasCachedState();
     pollTimer = setInterval(() => {
       void refreshFromServer();
       scheduleRenderMarkers();
@@ -644,8 +696,23 @@
 
   function refreshEditMode() {
     const edit = isEditMode();
-    currentArticleId = getArticleId();
-    currentChannel = getChannel();
+    const nextArticleId = getArticleId();
+    const nextChannel = nextArticleId ? 'freshdesk:' + nextArticleId : '';
+    const routeKey = edit && nextChannel ? nextChannel : '';
+
+    if (routeKey !== lastRouteKey) {
+      lastRouteKey = routeKey;
+      currentArticleId = nextArticleId;
+      currentChannel = nextChannel;
+      currentEditor = null;
+      currentState = null;
+      lastServerRevision = 0;
+      editorObserver?.disconnect();
+      editorObserver = null;
+    } else {
+      currentArticleId = nextArticleId;
+      currentChannel = nextChannel;
+    }
 
     if (!edit || !currentChannel) {
       removeUi();
@@ -657,33 +724,54 @@
     }
 
     installStyle();
-    currentEditor = findEditor();
+    const nextEditor = findEditor();
+    if (nextEditor !== currentEditor) {
+      currentEditor = nextEditor;
+      setupEditorObserver();
+    }
     installToolbar();
     ensureGutter();
-    setupEditorObserver();
 
-    if (!currentState) {
-      currentState = GM_getValue(stateKey(), null);
-      if (currentState) {
-        lastServerRevision = Number(currentState.revision) || 0;
-        updateToolbarState();
-        scheduleRenderMarkers();
-      }
+    // Do not restore issue state from GM storage on route entry.
+    // The local mediator state is authoritative and will be loaded by polling.
+    if (!pollTimer) startPolling();
+    else {
+      void refreshFromServer();
+      scheduleRenderMarkers();
     }
-    startPolling();
   }
 
   function observePage() {
     if (refreshObserver) return;
     refreshObserver = new MutationObserver(() => {
       clearTimeout(actionTimer);
-      actionTimer = setTimeout(refreshEditMode, 250);
+      actionTimer = setTimeout(refreshEditMode, 150);
     });
     refreshObserver.observe(document.documentElement, { childList: true, subtree: true });
     window.addEventListener('popstate', refreshEditMode);
     window.addEventListener('hashchange', refreshEditMode);
     window.addEventListener('scroll', scheduleRenderMarkers, true);
     window.addEventListener('resize', scheduleRenderMarkers);
+
+    const originalPushState = history.pushState;
+    const originalReplaceState = history.replaceState;
+    if (!history.__gegiProofreaderPatched) {
+      history.__gegiProofreaderPatched = true;
+      history.pushState = function (...args) {
+        const result = originalPushState.apply(this, args);
+        queueMicrotask(refreshEditMode);
+        return result;
+      };
+      history.replaceState = function (...args) {
+        const result = originalReplaceState.apply(this, args);
+        queueMicrotask(refreshEditMode);
+        return result;
+      };
+    }
+
+    if (!routeMonitorTimer) {
+      routeMonitorTimer = setInterval(refreshEditMode, 500);
+    }
   }
 
   observePage();
